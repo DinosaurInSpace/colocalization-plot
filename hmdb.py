@@ -111,9 +111,68 @@ flat_array_df = (pd.DataFrame(mols)
                  .set_index('ion', drop=True))
 flat_array_df.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_with_array_fields.csv')
 #%%
+def mols_to_ratios(group):
+    nodes = [
+        group.super_class,
+        group.super_class + '/' + group['class'],
+        group.super_class + '/' + group['class'] + '/' + group.sub_class,
+    ]
+    s = (pd.concat([node.value_counts() / len(group) for node in nodes])
+         .apply(lambda val: 'Likely' if val == 1 else 'Possibly' if val != 0 else 'Not')
+         .astype('category')
+         .rename(group.name))
+    return pd.DataFrame({'tree': s.index, 'ratio': s.values})
 
+ratio_array_df = (pd.DataFrame(mols)
+                 .groupby('formula')
+                 .apply(mols_to_ratios))
+ratio_array_df = ratio_array_df.reset_index().pivot(values='ratio', index='formula', columns='tree')
+ratio_array_df = ratio_array_df.merge(ion_formulas, left_index=True, right_on='formula')
+ratio_array_df = ratio_array_df.set_index('ion', drop=True)
+ratio_array_df.to_pickle('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_possibility_pivot.pickle')
 #%%
+def all_or_sum(series):
+    return 'Likely' if series.all() else 'Possibly' if series.any() else 'Not'
+def classes_of_interest(group):
+    s = {
+        'Amino acids, peptides, and analogues': group.sub_class == 'Amino acids, peptides, and analogues',
+        'Fatty acids and conjugates': group.sub_class == 'Fatty acids and conjugates',
+        'Long-chain fatty acids': group.direct_parent == 'Long-chain fatty acids',
+        'Lysophospholipids': group.direct_parent.isin({
+            "1-acyl-sn-glycero-3-phosphoethanolamines",
+            "2-acyl-sn-glycero-3-phosphoethanolamines",
+            "1-(1Z-alkenyl)-glycero-3-phosphoethanolamines",
+            "1-acyl-sn-glycero-3-phosphocholines",
+            "1-(1Z-alkenyl)-glycero-3-phosphocholines",
+            "1-acylglycerol-3-phosphates",
+            "2-acylglycerol-3-phosphates",
+            "1-acyl-sn-glycerol-3-phosphoinositols",
+        }),
+        'Ceramides': group.sub_class == 'Ceramides',
+        'Phosphosphingolipids': group.sub_class == 'Phosphosphingolipids',
+        'Sphingolipids': group['class'] == 'Sphingolipids',
+        'Glycerophospholipids': group['class'] == 'Glycerophospholipids',
+        'Glycerophosphocholines': group.sub_class == 'Glycerophosphocholines',
+        'Glycerophosphoethanolamines': group.sub_class == 'Glycerophosphoethanolamines',
+        'Glycerophosphates': group.sub_class == 'Glycerophosphates',
+        'Glycerophosphoglycerols': group.sub_class == 'Glycerophosphoglycerols',
+        'Glycerophosphoinositols': group.sub_class == 'Glycerophosphoinositols',
+        'Glycerolipids': group['class'] == 'Glycerolipids',
+        'Triradylcglycerols': group.sub_class == 'Triradylcglycerols',
+        'Diradylglycerols': group.sub_class == 'Diradylglycerols',
+        'Monoradylglycerols': group.sub_class == 'Monoradylglycerols',
+    }
+    s = pd.Series(dict([(k, all_or_sum(v)) for k,v in s.items()]))
+    return pd.DataFrame({'tree': s.index, 'ratio': s.values})
 
+class_array_df = (pd.DataFrame(mols)
+                 .groupby('formula')
+                 .apply(classes_of_interest))
+class_array_df = class_array_df.reset_index().pivot(values='ratio', index='formula', columns='tree')
+class_array_df = class_array_df.merge(ion_formulas, left_index=True, right_on='formula')
+class_array_df = class_array_df.set_index('ion', drop=True)
+class_array_df = class_array_df.drop(columns='formula')
+class_array_df.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_class_of_interest.csv')
 #%%
 
 #%%

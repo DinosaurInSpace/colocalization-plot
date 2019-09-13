@@ -1,33 +1,21 @@
 #%%
 import json, pickle, os, gc
 from datetime import datetime
+from itertools import cycle, repeat, product
 
 import numpy as np
 import pandas as pd
 from metaspace.sm_annotation_utils import SMInstance, SMDataset
 from concurrent.futures import ProcessPoolExecutor
+from analysis_pipe import filecache
 
 PATH = '/home/lachlan/dev/notebooks/metaspace-mol-cloud'
-FDR = 0.20
-FDR_PCT = round(FDR * 100)
+POS, NEG = 'pos', 'neg'
 # AVG_MODE:
 # 1 = naive averaging "When both molecules are present, how similar are they?"
 # 2 = (incorrect) "When both molecules could potentially be present, how similar are they (filling in 0 when either is missing)?")
 # 3 = "When either molecule is present, and both molecules could potentially be present, how similar are they (filling in 0 when either is missing)?"
-AVG_MODE = 3
-AVG_STR = {1: 'naive_avg', 2: 'broken_avg', 3: 'fixed_avg'}[AVG_MODE]
-DATASOURCE = 'cosine' # 'deep' or 'cosine'
-DATASOURCE_STR = {'deep':'_deep', 'cosine': ''}[DATASOURCE]
-FN_MS_DATA_POS = f'{PATH}/raw_data/metaspace_data_pos_fdr_{FDR_PCT}.pickle'
-FN_MS_DATA_NEG = f'{PATH}/raw_data/metaspace_data_neg_fdr_{FDR_PCT}.pickle'
-FN_RAW_COLOC_POS = f'{PATH}/raw_data/coloc_pos_hmdb{DATASOURCE_STR}_fdr_{FDR_PCT}.pickle'
-FN_RAW_COLOC_NEG = f'{PATH}/raw_data/coloc_neg_hmdb{DATASOURCE_STR}_fdr_{FDR_PCT}.pickle'
-FN_DENOM_POS = f'{PATH}/raw_data/denom_{AVG_STR}{DATASOURCE_STR}_pos_fdr_{FDR_PCT}.pickle'
-FN_DENOM_NEG = f'{PATH}/raw_data/denom_{AVG_STR}{DATASOURCE_STR}_neg_fdr_{FDR_PCT}.pickle'
-FN_AVG_COLOC_POS = f'{PATH}/processed_data/fdr_{FDR_PCT}/X_pos_{AVG_STR}{DATASOURCE_STR}.pickle'
-FN_AVG_COLOC_NEG = f'{PATH}/processed_data/fdr_{FDR_PCT}/X_neg_{AVG_STR}{DATASOURCE_STR}.pickle'
-
-#%%
+# DATASOURCE = 'cosine' # 'deep' or 'cosine'
 
 #%%
 def get_coloc_matrix(anns):
@@ -57,11 +45,9 @@ def get_coloc_matrix(anns):
             print(ex)
     return None
 
-def get_ds_data(ds_id):
-    global FDR
-
+def get_ds_data(ds_id, fdr):
     sm = SMInstance()
-    anns = sm._gqclient.getAnnotations({'database': 'HMDB-v4', 'fdrLevel': FDR,
+    anns = sm._gqclient.getAnnotations({'database': 'HMDB-v4', 'fdrLevel': fdr,
                                         'hasNeutralLoss': False, 'hasChemMod': False, 'hasHiddenAdduct': False},
                                        {'ids': ds_id})
     if len(anns) > 2:
@@ -77,17 +63,17 @@ def get_ds_data(ds_id):
 sm = SMInstance()
 # sm.login(**json.loads(open('/home/lachlan/.metaspace.json')))
 
-datasets = sm.datasets()
-def fetch_data_from_metaspace(is_pos, coloc_filename, data_filename):
+@filecache(mru=0)
+def fetch_data_from_metaspace(pol, fdr):
     all_coloc = []
     all_ranges = []
     all_mz_dict = {}
     ion_present_in_ds = set()
-    datasets = [SMDataset(info, sm._gqclient) for info in sm._gqclient.getDatasets({'polarity': 'POSITIVE' if is_pos else 'NEGATIVE'})]
+    datasets = [SMDataset(info, sm._gqclient) for info in sm._gqclient.getDatasets({'polarity': 'POSITIVE' if pol == POS else 'NEGATIVE'})]
     ds_ids = []
     with ProcessPoolExecutor(8) as ex:
-        for i, result in enumerate(ex.map(get_ds_data, [ds.id for ds in datasets])):
-            if i % 100 == 0: print("pos" if is_pos else "neg", i, 'of', len(datasets))
+        for i, result in enumerate(ex.map(get_ds_data, [ds.id for ds in datasets], repeat(fdr))):
+            if i % 100 == 0: print(pol, i, 'of', len(datasets))
             if result is not None:
                 ds_ids.append(datasets[i].id)
                 coloc, mz_range, mz_dict = result
@@ -98,29 +84,30 @@ def fetch_data_from_metaspace(is_pos, coloc_filename, data_filename):
                 ion_present_in_ds.update((n, mol) for mol in coloc.source)
                 ion_present_in_ds.update((n, mol) for mol in coloc.target)
 
+    gc.collect()
     all_coloc = pd.concat(all_coloc, ignore_index=True)
-    print('saving', coloc_filename)
-    all_coloc.to_pickle(coloc_filename)
-    del all_coloc; gc.collect()
-    pickle.dump((ds_ids, all_ranges, all_mz_dict, ion_present_in_ds), open(data_filename, 'wb'))
 
-if DATASOURCE == 'cosine':
-    fetch_data_from_metaspace(True, FN_RAW_COLOC_POS, FN_MS_DATA_POS)
-    fetch_data_from_metaspace(False, FN_RAW_COLOC_NEG, FN_MS_DATA_NEG)
-#%% Load non-colocalization data
-if DATASOURCE == 'cosine':
-    pos_ds_ids, pos_ranges, pos_mz_dict, pos_ion_present_in_ds = pickle.load(open(FN_MS_DATA_POS, 'rb'))
-    neg_ds_ids, neg_ranges, neg_mz_dict, neg_ion_present_in_ds = pickle.load(open(FN_MS_DATA_NEG, 'rb'))
-    # Fix WTF data
-    if any(isinstance(ion, tuple) for ds_idx, ion in pos_ion_present_in_ds):
-        print('wtf data detected')
-    pos_ion_present_in_ds = set((ds_idx, ion[0] if isinstance(ion, tuple) else ion) for ds_idx, ion in pos_ion_present_in_ds)
-    neg_ion_present_in_ds = set((ds_idx, ion[0] if isinstance(ion, tuple) else ion) for ds_idx, ion in neg_ion_present_in_ds)
+    return all_coloc, (ds_ids, all_ranges, all_mz_dict, ion_present_in_ds)
+
+def coloc_from_metaspace(pol, fdr):
+    return fetch_data_from_metaspace(pol, fdr)[0]
+
+@filecache()
+def ds_info_from_metaspace(pol, fdr):
+    return fetch_data_from_metaspace(pol, fdr)[1]
+
+# ds_info_from_metaspace(POS, 0.05)
+# ds_info_from_metaspace(NEG, 0.05)
+# ds_info_from_metaspace(POS, 0.20)
+# ds_info_from_metaspace(NEG, 0.20)
 
 #%% Filter non-colocalization data to match external data source
-def filter_ext_data(ext_coloc, ms_data, output_fn):
-    global i, ext_ds_ids, common_ds_idxs, ds_ids, mz_ranges
-    ds_ids, mz_ranges, mz_dict, ion_present_in_ds = pickle.load(open(ms_data, 'rb'))
+@filecache()
+def data_from_ext(pol, fdr):
+    ext_coloc = (pd.read_csv(f'{PATH}/raw_data/preds_pi_for_lachlan_fdr{round(fdr*100)}.csv')
+                 .assign(source=lambda df: df.sourceSf + df.sourceAdduct,
+                         target=lambda df: df.targetSf + df.targetAdduct))
+    ds_ids, mz_ranges, mz_dict, ion_present_in_ds = ds_info_from_metaspace(pol, fdr)
 
     coloc = ext_coloc[ext_coloc.datasetId.isin(ds_ids)][['source','target','score']]
     ext_ds_ids_set = set(ext_coloc.datasetId.unique())
@@ -131,15 +118,20 @@ def filter_ext_data(ext_coloc, ms_data, output_fn):
     ext_ion_present_in_ds = [(i, ion) for i, ion in ion_present_in_ds if i in common_ds_idxs_set]
     fixed_coloc = coloc.assign(score=1 - coloc.score / np.nanmax(coloc.score))
 
-    fixed_coloc.to_pickle(output_fn)
-    return ext_ds_ids, ext_mz_ranges, mz_dict, ext_ion_present_in_ds
+    return fixed_coloc, (ext_ds_ids, ext_mz_ranges, mz_dict, ext_ion_present_in_ds)
 
-if DATASOURCE == 'deep':
-    ext_coloc = (pd.read_csv(f'{PATH}/raw_data/preds_pi_for_lachlan_fdr5.csv')
-                 .assign(source=lambda df: df.sourceSf + df.sourceAdduct,
-                         target=lambda df: df.targetSf + df.targetAdduct))
-    pos_ds_ids, pos_ranges, pos_mz_dict, pos_ion_present_in_ds = filter_ext_data(ext_coloc, FN_MS_DATA_POS, FN_RAW_COLOC_POS)
-    neg_ds_ids, neg_ranges, neg_mz_dict, neg_ion_present_in_ds = filter_ext_data(ext_coloc, FN_MS_DATA_NEG, FN_RAW_COLOC_NEG)
+def coloc_from_ext(pol, fdr):
+    return data_from_ext(pol, fdr)[0]
+
+@filecache()
+def ds_info_from_ext(pol, fdr):
+    return data_from_ext(pol, fdr)[1]
+
+def coloc(pol, fdr, alg):
+    return (coloc_from_metaspace if alg == 'cosine' else coloc_from_ext)(pol, fdr)
+
+def ds_info(pol, fdr, alg):
+    return (ds_info_from_metaspace if alg == 'cosine' else ds_info_from_ext)(pol, fdr)
 #%% Make table of how many potential colocalizations actually can exist (This is the denominator of the averaging step)
 def make_mz_df_index(mz_ranges, mz_dict):
     mz_df = (pd.DataFrame(mz_dict.items(), columns=['ion','mz']))
@@ -159,7 +151,7 @@ def make_present_index(ion_present_in_ds, ds_cnt, ion_idx):
     return table
 
 
-def make_mz_coloc_df(mz_df, ion_present_table):
+def make_mz_coloc_df(mz_df, ion_present_table, avg_mode):
     mz_coloc_df = pd.DataFrame(0, index=mz_df.index, columns=mz_df.index, dtype=np.uint16)
 
     import numba
@@ -180,54 +172,47 @@ def make_mz_coloc_df(mz_df, ion_present_table):
     for i in range(0, len(mz_df), 1000):
         i_end = min(i + 1000, len(mz_df))
         print(datetime.now().ctime(), i, 'to', i_end, 'out of', len(mz_df))
-        do_rows(mz_coloc_df.values, list(mz_df.ds_idxs.values), ion_present_table, AVG_MODE, i, i_end)
+        do_rows(mz_coloc_df.values, list(mz_df.ds_idxs.values), ion_present_table, avg_mode, i, i_end)
     return mz_coloc_df
 
-def generate_denom_matrix(mz_ranges, mz_dict, ion_present_in_ds, filename):
-    global mz_df, ion_present_table, mz_coloc_df
-    print(f'generate_denom_matrix{repr((len(mz_ranges), len(mz_dict), len(ion_present_in_ds), filename))}')
-    mz_df = make_mz_df_index(mz_ranges, mz_dict)
-    ion_present_table = make_present_index(ion_present_in_ds, len(mz_ranges), mz_df.index)
-    # mz_coloc_df = make_mz_coloc_df(mz_df, ion_present_table)
-    # mz_coloc_df.to_pickle(filename)
-
-
-if AVG_MODE in (2, 3):
+@filecache()
+def denom(pol, fdr, alg, avg_mode):
+    if avg_mode not in (2,3):
+        return None
+    ds_ids, mz_ranges, mz_dict, ion_present_in_ds = ds_info(pol, fdr, alg)
     # Molecules' m/z values can vary by a small amount based on resolving power :( Widen the m/z window slightly to catch molecules that lie near the border
-    fixed_pos_ranges = np.array(pos_ranges) + [[-0.0025, 0.0025]]
-    fixed_neg_ranges = np.array(neg_ranges) + [[-0.0025, 0.0025]]
-    generate_denom_matrix(fixed_pos_ranges, pos_mz_dict, pos_ion_present_in_ds, FN_DENOM_POS)
-    generate_denom_matrix(fixed_neg_ranges, neg_mz_dict, neg_ion_present_in_ds, FN_DENOM_NEG)
+    fixed_mz_ranges = np.array(mz_ranges) + [[-0.0025, 0.0025]]
+    print(f'generate_denom_matrix{repr((len(mz_ranges), len(mz_dict), len(ion_present_in_ds)))}')
+    mz_df = make_mz_df_index(fixed_mz_ranges, mz_dict)
+    ion_present_table = make_present_index(ion_present_in_ds, len(fixed_mz_ranges), mz_df.index)
+    return make_mz_coloc_df(mz_df, ion_present_table, avg_mode)
 
 #%% Finally make the comparison matrix
-def pivot_and_normalize_X(raw_coloc_filename, denom_filename, output_filename):
-    global pre_avg, fit_denom
-    print(f'pivot_and_normalize_X{repr((raw_coloc_filename, denom_filename, output_filename))}')
+@filecache()
+def pivot_and_normalize_X(pol, fdr, alg, avg_mode):
+    aggfunc = 'sum' if avg_mode in (2,3) else 'mean'
+    X = coloc(pol, fdr, alg)
     gc.collect()
-    aggfunc = 'sum' if AVG_MODE in (2,3) else 'mean'
-    X = pd.read_pickle(raw_coloc_filename)
     value_col = 'score' if 'score' in X.columns else 'cosine'
     X = pd.concat([X, X.rename(columns={'source': 'target', 'target': 'source'})], ignore_index=True, sort=True) \
         .pivot_table(index='source', columns='target', values=value_col, aggfunc=aggfunc)
     gc.collect()
-    if AVG_MODE in (2,3):
-        denom = pd.read_pickle(denom_filename)
-        pre_avg = X
-        fit_denom = denom.reindex_like(X)
+    if avg_mode in (2,3):
+        fit_denom = denom(pol, fdr, alg, avg_mode).reindex_like(X)
         fit_denom[fit_denom == 0] = 1
-        X = X / denom.reindex_like(X)
+        X = X / fit_denom
         X.values[X.values > 1] = 1
 
     X.fillna(0, inplace=True)
     # Convert sum-similarity to something resembling a distance
     X = 1 - X
     for i in range(len(X)): X.iloc[i, i] = 0
-    print('writing', output_filename)
-    X.to_pickle(output_filename)
-    del X; gc.collect()
+    return X
 
-pivot_and_normalize_X(FN_RAW_COLOC_POS, FN_DENOM_POS, FN_AVG_COLOC_POS)
-pivot_and_normalize_X(FN_RAW_COLOC_NEG, FN_DENOM_NEG, FN_AVG_COLOC_NEG)
+for pol, fdr, avg_mode in product([POS, NEG], [0.05, 0.20], [1,3]):
+    pivot_and_normalize_X(pol, fdr, 'cosine', avg_mode)
+for pol, fdr, avg_mode in product([POS, NEG], [0.05], [1,3]):
+    pivot_and_normalize_X(pol, fdr, 'deep', avg_mode)
 
 #%% Make apples-to-apples comparison by only including ions present in both
 def make_intersection_df(avg_coloc_cosine_fn, avg_coloc_deep_fn, cosine_output_fn, deep_output_fn):

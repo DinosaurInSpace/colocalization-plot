@@ -5,126 +5,92 @@ import matplotlib.pyplot as plt # For PyCharm to notice plt is defined
 import json, pickle, os, gc, numpy as np, pandas as pd
 from itertools import cycle, product
 # Config
+from analysis_pipe import filecache
+
 PATH = '/home/lachlan/dev/notebooks/metaspace-mol-cloud'
-FDR = 0.20
-FDR_PCT = round(FDR * 100)
+POS, NEG = 'pos', 'neg'
 # PREPROCESS:
 # None - use plain cosine distances
 # truncate - take N (hard-coded below) top ions based on their average cosine distance to all other mols
 # normalize - stretch the 0.0001th quantile cosine distance down to 0.0001, scaling numbers below & above to match
-PREPROCESS = None
+# PREPROCESS = None
 # AVG_MODE:
 # 1 = naive averaging "When both molecules are present, how similar are they?"
 # 2 = (incorrect) "When both molecules could potentially be present, how similar are they (filling in 0 when either is missing)?")
 # 3 = "When either molecule is present, and both molecules could potentially be present, how similar are they (filling in 0 when either is missing)?"
-AVG_MODE = 3
-DATASOURCE = 'cosine' # 'deep' or 'cosine'
+# AVG_MODE = 3
+# DATASOURCE = 'cosine' # 'deep' or 'cosine'
+def get_output_filename(pol, fdr, alg, avg_mode, preprocess, func_name, ext):
+    parts = [
+        func_name,
+        fdr and round(fdr * 100),
+        alg,
+        pol,
+        avg_mode and {1: 'naive_avg', 2: 'broken_avg', 3: 'fixed_avg'}[avg_mode],
+        preprocess and {'truncate': '_trunc', 'normalize': '_norm', None: ''}[preprocess],
+    ]
+    key = '_'.join(str(part) for part in parts if part)
+    return f'{PATH}/charts/{key}{ext}'
 FIG_WIDTH = 1920
 FIG_HEIGHT = 1080
 
 # Derived constants
-PREPROCESS_STR = {'truncate': '_trunc', 'normalize': '_norm', None: ''}[PREPROCESS]
-AVG_STR = {1: 'naive_avg', 2: 'broken_avg', 3: 'fixed_avg'}[AVG_MODE]
-DATASOURCE_STR = {'cosine': ''}.get(DATASOURCE, '_' + DATASOURCE)
-FN_AVG_COLOC_POS = f'{PATH}/processed_data/fdr_{FDR_PCT}/X_pos_{AVG_STR}{DATASOURCE_STR}.pickle'
-FN_AVG_COLOC_NEG = f'{PATH}/processed_data/fdr_{FDR_PCT}/X_neg_{AVG_STR}{DATASOURCE_STR}.pickle'
-FN_UMAP_POS = f'{PATH}/processed_data/fdr_{FDR_PCT}/umap_{DATASOURCE}{PREPROCESS_STR}_pos.pickle'
-FN_UMAP_NEG = f'{PATH}/processed_data/fdr_{FDR_PCT}/umap_{DATASOURCE}{PREPROCESS_STR}_neg.pickle'
-OUTPUT_PREFIX = f'{PATH}/charts/{DATASOURCE}{PREPROCESS_STR}_{FDR_PCT}'
 matplotlib.rcParams['figure.dpi'] = 100
 matplotlib.rcParams['figure.figsize'] = (FIG_WIDTH / 100, FIG_HEIGHT / 100)
 
 #%% Generate & save umap
-def run_umap(input_fn, output_fn):
+if 'pivot_and_normalize_X' not in globals():
+    @filecache()
+    def pivot_and_normalize_X(pol, fdr, alg, avg_mode):
+        raise NotImplementedError('This function is just a stub to access the cached data. Use the batch_processes2 file for putting data in the cache')
+
+@filecache()
+def run_umap(pol, fdr, alg, avg_mode, preprocess):
     import umap
-    input_df = pd.read_pickle(input_fn)
+    input_df = pivot_and_normalize_X(pol, fdr, alg, avg_mode)
     gc.collect()
 
-    if PREPROCESS == 'truncate':
+    if preprocess == 'truncate':
         # Get top N colocalized ions
         top_ions = input_df.mean().sort_values().iloc[:5000].index
         input_df = input_df.loc[top_ions, top_ions]
-    elif PREPROCESS == 'normalize':
+    elif preprocess == 'normalize':
         base = 0.0001
         lo, hi = np.quantile(input_df, [0.0001, 1])
         assert hi - lo > base
         squeezed = np.where(input_df < lo, input_df / lo * base, (input_df - lo) / (hi - lo - base) + base)
         input_df.iloc[:, :] = np.clip(squeezed, 0, 1)
         assert isinstance(input_df, pd.DataFrame)
+    elif preprocess is None:
+        pass
 
     embedding = umap.UMAP(random_state=42, metric='precomputed').fit_transform(input_df.values)
     output_df = pd.DataFrame(embedding, columns=('x', 'y'))
     output_df['ion'] = input_df.index.values
-    print(f'writing {output_fn}')
-    output_df.to_pickle(output_fn)
+    return output_df
 
-
-REGENERATE_UMAP = True
-if REGENERATE_UMAP:
-    run_umap(FN_AVG_COLOC_POS, FN_UMAP_POS)
-    run_umap(FN_AVG_COLOC_NEG, FN_UMAP_NEG)
+# run_umap(POS, 0.05, 'cosine', 3, None)
 #%% Load umap
 
-def clip_xy(df, q):
-    ASPECT = 4/3
+def clip_and_join_umap(pol, fdr, alg, avg_mode, preprocess, q):
+    df = run_umap(pol, fdr, alg, avg_mode, preprocess)
+
     xb, xlo, xhi, xt = np.quantile(df.x, [0, q, 1-q, 1])
     yb, ylo, yhi, yt = np.quantile(df.y, [0, q, 1-q, 1])
     xspan, yspan = xhi-xlo, yhi-ylo
     xmin, xmax = xlo - xspan/20, xhi + xspan/20
     ymin, ymax = ylo - yspan/20, yhi + yspan/20
-    # overclip = xspan / yspan / ASPECT
-    # print(overclip)
-    # print('x', xb, xt), print(xlo, xhi), print(xmin, xmax, xspan)
-    # print('y', yb, yt), print(ylo, yhi), print(ymin, ymax, yspan)
-    # if overclip > 1:
-    #     print('expand y')
-    #     ymin -= yspan * overclip / 2 / ASPECT
-    #     ymax += yspan * overclip / 2 / ASPECT
-    # else:
-    #     print('expand x')
-    #     xmin += xspan * overclip / 2
-    #     xmax -= xspan * overclip / 2
+
     print('xmin', xmin, xmax, 'xb', xb, xt)
     print('ymin', ymin, ymax, 'yb', yb, yt)
-    # xmin, xmax = max(xmin, xb), min(xmax, xt)
-    # ymin, ymax = max(ymin, yb), min(ymax, yt)
-    return df[(df.x >= xmin) & (df.x <= xmax) & (df.y >= ymin) & (df.y <= ymax)]
-    # return df
+    df = df[(df.x >= xmin) & (df.x <= xmax) & (df.y >= ymin) & (df.y <= ymax)]
 
-lipids_by_ion = pd.read_csv(f'{PATH}/lipids_by_ion.csv').set_index('ion')
-class_of_interest = pd.read_csv(f'{PATH}/hmdb_class_of_interest.csv').set_index('ion')
-# ddf_pos = clip_xy(pd.read_pickle(FN_UMAP_POS), q=0.02)
-# ddf_neg = clip_xy(pd.read_pickle(FN_UMAP_NEG), q=0.02)
-# ddf_pos = ddf_pos.set_index('ion').join(lipids_by_ion).join(class_of_interest)
-# ddf_neg = ddf_neg.set_index('ion').join(lipids_by_ion).join(class_of_interest)
-df_pos = clip_xy(pd.read_pickle(FN_UMAP_POS), q=0.02)
-df_neg = clip_xy(pd.read_pickle(FN_UMAP_NEG), q=0.02)
-df_pos = df_pos.set_index('ion').join(lipids_by_ion).join(class_of_interest)
-df_neg = df_neg.set_index('ion').join(lipids_by_ion).join(class_of_interest)
+    lipids_by_ion = pd.read_csv(f'{PATH}/lipids_by_ion.csv').set_index('ion')
+    class_of_interest = pd.read_csv(f'{PATH}/hmdb_class_of_interest.csv').set_index('ion')
+    return df.set_index('ion').join(lipids_by_ion).join(class_of_interest)
 
-
+# debug = clip_and_join_umap(POS, 0.05, 'cosine', 3, None, 0.02)
 #%% Plot "Is a lipid?" charts
-plt.close('all')
-plt.figure()
-# fig, axs = plt.subplots(2,2, gridspec_kw=dict(wspace=0.025, hspace=0.25, left=0.01, top=0.95, right=0.99, bottom=0.01), num=1)
-fig, axs = plt.subplots(2,2, num=1)
-fig.tight_layout()
-mdf_pos = df_pos
-mdf_neg = df_neg
-
-plots = [
-    # Plot 1 - lipid classes
-    (axs[0,0], mdf_pos, 'is_lipid', 'Positive mode - Is ion a lipid?'),
-    (axs[1,0], mdf_pos, 'lipid_type', 'Positive mode - Lipid type'),
-    (axs[0,1], mdf_neg, 'is_lipid', 'Negative mode - Is ion a lipid?'),
-    (axs[1,1], mdf_neg, 'lipid_type', 'Negative mode - Lipid type'),
-
-    # Plot 2 -
-    # (axs[0,0], mdf_pos, 'class', 'Positive mode - Molecular class'),
-    # (axs[1,0], mdf_pos, 'sub_class', 'Positive mode - Molecular subclass'),
-    # (axs[0,1], mdf_neg, 'class', 'Negative mode - Molecular class'),
-    # (axs[1,1], mdf_neg, 'sub_class', 'Negative mode - Molecular subclass'),
-]
 
 def plot_mpl(ax, mdf, col, title):
     mdf[col] = mdf[col].astype('category')
@@ -162,28 +128,45 @@ def plot_ds(ax, mdf, col, title):
     from matplotlib.lines import Line2D
     ax.legend([Line2D([0], [0], color=c, lw=4) for c in color_key.values()], color_key.keys(), loc='upper left', markerscale=5)
 
-MPL = True
-# MPL = False
-for ax, df, col, title in plots:
-    if MPL:
-        plot_mpl(ax, df, col, title)
-    else:
-        plot_ds(ax, df, col, title)
-    ax.set_title(title)
-    ax.set_xticks([])
-    ax.set_yticks([])
+def plot_lipid_chart(fdr, alg, avg_mode, preprocess, q, mpl):
+    plt.figure(1).clear()
+    fig, axs = plt.subplots(2,2, gridspec_kw=dict(wspace=0.025, hspace=0.25, left=0.01, top=0.95, right=0.99, bottom=0.01), num=1)
+    fig.tight_layout()
+    mdf_pos = clip_and_join_umap(POS, fdr, alg, avg_mode, preprocess, q)
+    mdf_neg = clip_and_join_umap(NEG, fdr, alg, avg_mode, preprocess, q)
 
-print(f'Saving {OUTPUT_PREFIX}_lipids.png')
-plt.savefig(f'{OUTPUT_PREFIX}_lipids.png')
+    plots = [
+        # Plot 1 - lipid classes
+        (axs[0,0], mdf_pos, 'is_lipid', 'Positive mode - Is ion a lipid?'),
+        (axs[1,0], mdf_pos, 'lipid_type', 'Positive mode - Lipid type'),
+        (axs[0,1], mdf_neg, 'is_lipid', 'Negative mode - Is ion a lipid?'),
+        (axs[1,1], mdf_neg, 'lipid_type', 'Negative mode - Lipid type'),
+
+        # Plot 2 -
+        # (axs[0,0], mdf_pos, 'class', 'Positive mode - Molecular class'),
+        # (axs[1,0], mdf_pos, 'sub_class', 'Positive mode - Molecular subclass'),
+        # (axs[0,1], mdf_neg, 'class', 'Negative mode - Molecular class'),
+        # (axs[1,1], mdf_neg, 'sub_class', 'Negative mode - Molecular subclass'),
+    ]
+
+    for ax, df, col, title in plots:
+        if mpl:
+            plot_mpl(ax, df, col, title)
+        else:
+            plot_ds(ax, df, col, title)
+        ax.set_title(title)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    output = get_output_filename(None, fdr, alg, avg_mode, preprocess, 'lipids', '.png')
+    print(f'Saving {output}')
+    plt.savefig(f'{output}')
+
+
+plot_lipid_chart(0.05, 'cosine', 3, None, 0.02, True)
 
 #%% Plot charts highlighting individual molecule classes
 
-mdf_pos = df_pos\
-    .assign(class_tree=lambda df: df.super_class+'/'+df['class'],
-            sub_class_tree=lambda df: df['class']+'/'+df.sub_class)
-mdf_neg = df_neg\
-    .assign(class_tree=lambda df: df.super_class+'/'+df['class'],
-            sub_class_tree=lambda df: df['class']+'/'+df.sub_class)
 
 def plot_mpl_highlight(ax, mdf, col, value, color, title):
     # categories = mdf[col].cat.categories.values
@@ -209,36 +192,45 @@ def plot_ds_highlight(ax, mdf, col, value, color, title):
 
     ax.imshow(img)
 
-plt.figure(1).clear()
-fig, axs = plt.subplots(3, 6, gridspec_kw=dict(wspace=0.025, hspace=0.25, left=0.01, top=0.95, right=0.99, bottom=0.01), num=1)
-fig.tight_layout(rect=(0,0,1,1))
-axs = [*axs[:, :3].flatten(), *axs[:, 3:].flatten()]
-is_poss = [True] * 12 + [False] * 12
-# cols = (['class_tree'] * 9 + ['sub_class_tree'] * 3) * 2
-# cols = (['super_class'] * 6 + ['class_tree'] * 6) * 2
-# inds = ([*range(9), *range(3)]) * 2
-cols = (['class_tree'] * 12) * 2
-inds = ([*range(12)]) * 2
-# colors = ([*(plt.cm.Set1.colors + plt.cm.Set2.colors + plt.cm.Set3.colors)][:12]) * 2
-colors = cycle(plt.cm.tab10.colors[:4] + plt.cm.tab10.colors[5:7]) # Only non-greyish colors
-MPL = True
-# MPL = False
-for ax, is_pos, col, ind, color in zip(axs, is_poss, cols, inds, colors):
-    mdf = mdf_pos if is_pos else mdf_neg
-    value = mdf[col].value_counts().index[ind]
-    value_str = value.replace("/", " ->\n")
-    title = f'{"Positive" if is_pos else "Negative"} Mode\n{value_str}'
-    if MPL:
-        plot_mpl_highlight(ax, mdf, col, value, color, title)
-    else:
-        plot_ds_highlight(ax, mdf, col, value, color, title)
-    ax.set_title(title)
-    ax.set_xticks([])
-    ax.set_yticks([])
+def plot_mol_classes_chart(fdr, alg, avg_mode, preprocess, q, mpl):
+    mdf_pos = clip_and_join_umap(POS, fdr, alg, avg_mode, preprocess, q)\
+        .assign(class_tree=lambda df: df.super_class+'/'+df['class'],
+                sub_class_tree=lambda df: df['class']+'/'+df.sub_class)
+    mdf_neg = clip_and_join_umap(NEG, fdr, alg, avg_mode, preprocess, q)\
+        .assign(class_tree=lambda df: df.super_class+'/'+df['class'],
+                sub_class_tree=lambda df: df['class']+'/'+df.sub_class)
+
+    plt.figure(1).clear()
+    fig, axs = plt.subplots(3, 6, gridspec_kw=dict(wspace=0.025, hspace=0.25, left=0.01, top=0.95, right=0.99, bottom=0.01), num=1)
+    fig.tight_layout(rect=(0,0,1,1))
+    axs = [*axs[:, :3].flatten(), *axs[:, 3:].flatten()]
+    is_poss = [True] * 12 + [False] * 12
+    # cols = (['class_tree'] * 9 + ['sub_class_tree'] * 3) * 2
+    # cols = (['super_class'] * 6 + ['class_tree'] * 6) * 2
+    # inds = ([*range(9), *range(3)]) * 2
+    cols = (['class_tree'] * 12) * 2
+    inds = ([*range(12)]) * 2
+    # colors = ([*(plt.cm.Set1.colors + plt.cm.Set2.colors + plt.cm.Set3.colors)][:12]) * 2
+    colors = cycle(plt.cm.tab10.colors[:4] + plt.cm.tab10.colors[5:7]) # Only non-greyish colors
+    for ax, is_pos, col, ind, color in zip(axs, is_poss, cols, inds, colors):
+        mdf = mdf_pos if is_pos else mdf_neg
+        value = mdf[col].value_counts().index[ind]
+        value_str = value.replace("/", " ->\n")
+        title = f'{"Positive" if is_pos else "Negative"} Mode\n{value_str}'
+        if mpl:
+            plot_mpl_highlight(ax, mdf, col, value, color, title)
+        else:
+            plot_ds_highlight(ax, mdf, col, value, color, title)
+        ax.set_title(title)
+        ax.set_xticks([])
+        ax.set_yticks([])
 
 
-print(f'Saving {OUTPUT_PREFIX}_mol_classes.png')
-plt.savefig(f'{OUTPUT_PREFIX}_mol_classes.png')
+    output = get_output_filename(None, fdr, alg, avg_mode, preprocess, 'mol_classes', '.png')
+    print(f'Saving {output}')
+    plt.savefig(f'{output}')
+
+plot_mol_classes_chart(0.05, 'cosine', 3, None, 0.02, True)
 
 #%% Bespoke plot
 
@@ -383,9 +375,7 @@ plt.close('all')
 
 def plot_classes_mpl(ax, mdf, col):
     groups = mdf.groupby(col)
-    categories = [('Not', 'Not', '#DDDDDD'),
-                  ('Possibly', 'Possibly', 'red'),
-                  ('Likely', 'Likely', 'green')]
+    categories = [('Not', 'Not', '#DDDDDD'), ('Possibly', 'Possibly', 'red'), ('Likely', 'Likely', 'green')]
     for val, label, color in categories:
         if val in groups.groups:
             grp = groups.get_group(val)
@@ -393,7 +383,7 @@ def plot_classes_mpl(ax, mdf, col):
         else:
             ax.scatter([], [], c=[color], s=1, label=label, alpha=0.5)
 
-    # ax.legend(loc='upper left', markerscale=5)
+    ax.legend(loc='upper left', markerscale=5)
 
 for mdf, suf in [(df_pos, '_pos'), (df_neg, '_neg')]:
     plt.figure(1).clear()
@@ -415,48 +405,6 @@ for mdf, suf in [(df_pos, '_pos'), (df_neg, '_neg')]:
     plt.savefig(f'{OUTPUT_PREFIX}_classes{suf}.png')
 
 #%% Plot all classes
-plt.close('all')
-ratio_array_df = pd.read_pickle('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_possibility_pivot.pickle')
-mdf_pos = df_pos[['x','y']].join(ratio_array_df)
-mdf_neg = df_neg[['x','y']].join(ratio_array_df)
-mddf_pos = ddf_pos[['x','y']].join(ratio_array_df)
-mddf_neg = ddf_neg[['x','y']].join(ratio_array_df)
-
-categories = [('Not', 'Not', '#DDDDDD'), ('Possibly', 'Possibly', 'red'), ('Likely', 'Likely', 'green')]
-
-for cls in ratio_array_df.columns:
-    plt.figure(1).clear()
-    fig, axs = plt.subplots(2, 2, gridspec_kw=dict(wspace=0.025, hspace=0.25, left=0.01, top=0.95, right=0.99, bottom=0.01), num=1)
-    fig.tight_layout(rect=(0,0,1,1))
-    axs = axs.flatten()
-
-    has_data = 0
-    for ax, (mdf, md) in zip(axs, [(mdf_pos, 'Cosine / Positive mode'), (mdf_neg, 'Cosine / Negative mode'),
-                                   (mddf_pos, 'DL / Positive mode'), (mddf_neg, 'DL / Negative mode'),]):
-        groups = mdf[['x', 'y', cls]].fillna('Not').groupby(cls)
-
-        for val, label, color in categories:
-            if val in groups.groups:
-                grp = groups.get_group(val)
-                ax.scatter(grp.x.values, grp.y.values, c=[color], s=1, label=label, alpha=1)
-                if val != 'Not': has_data = max(has_data, len(grp))
-            else:
-                ax.scatter([], [], c=[color], s=1, label=label, alpha=0.5)
-
-        ax.legend(loc='upper left', markerscale=5)
-        ax.set_title(md)
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-    if has_data >= 20:
-        print(f'Saving {OUTPUT_PREFIX}/{cls}.png')
-        os.makedirs(os.path.dirname(f'{OUTPUT_PREFIX}/20_ion_threshold/{cls}.png'), exist_ok=True)
-        plt.savefig(f'{OUTPUT_PREFIX}/20_ion_threshold/{cls}.png')
-    # if has_data <= 5:
-    #     print(f'Skipping {OUTPUT_PREFIX}/{cls}.png')
-
-
-#%% Plot specific classes
 plt.close('all')
 ratio_array_df = pd.read_pickle('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_possibility_pivot.pickle')
 mdf_pos = df_pos[['x','y']].join(ratio_array_df)
