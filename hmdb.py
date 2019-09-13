@@ -2,7 +2,6 @@
 import pickle
 import pandas as pd
 TAXONOMY_FIELDS = ['kingdom', 'super_class', 'class', 'sub_class', 'direct_parent', 'molecular_framework']
-LIPID_CLASS = 'Lipids and lipid-like molecules'
 
 #%% Parse HMDB & dump to hmdb_mols.pickle
 from xml.etree.cElementTree import iterparse
@@ -18,13 +17,14 @@ NS = '{http://www.hmdb.ca}'
 
 root = None
 mols = []
-for event, elem in iterparse('/home/lachlan/Downloads/HMDB/hmdb_metabolites.xml', events=('start','end')):
+for event, elem in iterparse('hmdb_metabolites.xml', events=('start','end')):
     if root is None:
         root = elem
     if event == 'end' and elem.tag == f'{NS}metabolite':
         fields = {
             'id': get_one_text(elem, f'{NS}accession'),
             'formula': get_one_text(elem, f'{NS}chemical_formula'),
+            'inchi': get_one_text(elem, f'{NS}inchi'),
             'mol_name': get_one_text(elem, f'{NS}name'),
             **dict((field, get_one_text(elem, f'{NS}taxonomy/{NS}' + field)) for field in TAXONOMY_FIELDS),
             'substituents': get_many_text(elem, f'{NS}taxonomy/{NS}substituents/{NS}substituent'),
@@ -39,12 +39,16 @@ for event, elem in iterparse('/home/lachlan/Downloads/HMDB/hmdb_metabolites.xml'
         elem.clear()
         root.clear()
 
-pickle.dump(mols, open('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_mols.pickle', 'wb'))
+# Dump the output to disk so it can be loaded more quickly later
+pickle.dump(mols, open('hmdb_mols.pickle', 'wb'))
 
 #%%
-mols = pickle.load(open('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_mols.pickle', 'rb'))
+# Reload
+mols = pickle.load(open('hmdb_mols.pickle', 'rb'))
 
-#%%
+
+#%% Build dataframes of features for each molecule
+LIPID_CLASS = 'Lipids and lipid-like molecules'
 basic_df = pd.DataFrame(mols)[['id', 'formula', 'mol_name', *TAXONOMY_FIELDS]].set_index('id')
 cloc_df = pd.DataFrame([{'id': m['id'], **dict((l, 1) for l in m['cellular_locations'])} for m in mols]).set_index('id')
 bloc_df = pd.DataFrame([{'id': m['id'], **dict((l, 1) for l in m['biospecimen_locations'])} for m in mols]).set_index('id')
