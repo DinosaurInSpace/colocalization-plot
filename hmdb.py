@@ -96,11 +96,12 @@ lipids_by_ion = ion_formulas.merge(lipids_df, on='formula').set_index('ion')
 # bloc_by_ion = bloc_by_formula.merge(ion_formulas, left_index=True, right_on='formula').set_index('ion').drop(columns=['formula'])
 # tloc_by_ion = tloc_by_formula.merge(ion_formulas, left_index=True, right_on='formula').set_index('ion').drop(columns=['formula'])
 #%%
-basic_by_ion.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_by_ion.csv')
-lipids_df.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/lipids_by_formula.csv', index=False)
-lipids_by_ion.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/lipids_by_ion.csv')
-bloc_by_ion.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_biospecimen_loc.csv')
-tloc_by_ion.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_tissue_loc.csv')
+''' Don't have noteboooks -CMR'''
+# basic_by_ion.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_by_ion.csv')
+# lipids_df.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/lipids_by_formula.csv', index=False)
+# lipids_by_ion.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/lipids_by_ion.csv')
+# bloc_by_ion.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_biospecimen_loc.csv')
+# tloc_by_ion.to_csv('/home/lachlan/dev/notebooks/metaspace-mol-cloud/hmdb_tissue_loc.csv')
 #%% Make hmdb_with_array_fields
 def merge_list_fields(group):
     return pd.DataFrame([{
