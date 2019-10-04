@@ -1,12 +1,14 @@
-from rdkit import Chem
-from rdkit.Chem import PandasTools
-from __main__ import * # To access namespace of calling module, e.g. Ipython
 from contextlib import redirect_stdout
 import io
-import pickle
 from pandas import DataFrame as df
+import pickle
+from rdkit import Chem
+from rdkit.Chem import PandasTools
 
+# from __main__ import * # To access namespace of calling module, e.g. Ipython
 
+# -1. Split into initial structure parse (working) then search script (not working)
+# 0. Issue with checking for substrucutre
 # 1. Save log of when structures fail, and triage
 # 2. Change substruct_variable function and substruct variable to call from config file
 # 3. dd table of all functional groups...
@@ -24,7 +26,7 @@ def substruct_target(target_name):
     # Carboxylic acid or conjugate base.
     carboxyl = Chem.MolFromSmarts('[CX3](=O)[OX1H0-,OX2H1]')
 
-    targets = {"-OH": hydroxy, "-NH2": amine, "-CO2H": carboxyl}
+    targets = {"OH": hydroxy, "NH2": amine, "CO2H": carboxyl}
 
     return targets[target_name]
 
@@ -35,8 +37,8 @@ def nl_finder(structure, target):
     with io.StringIO() as buf, redirect_stdout(buf):
         output = buf.getvalue()
         print(structure.HasSubstructMatch(target))
-        return output
-
+    print(output)
+    return output
 
 def inchi_smiles(input):
 
@@ -57,12 +59,15 @@ hmdb_df['Smiles'] = hmdb_df.apply(lambda x: inchi_smiles(x['inchi']), axis=1)
 PandasTools.AddMoleculeColumnToFrame(hmdb_df,'Smiles','Molecule')
 
 
-substructs = ["-OH", "-NH2", "-CO2H"]
+substructs = ["OH", "NH2", "CO2H"]
 
 for target_name in substructs:
     hmdb_df[target_name] = substruct_target(target_name)
 
     present = target_name + "_present"
+
+    # This function isn't executing correctly, is it the lambda or nl_finder?
+    # Issue with io?
     hmdb_df[present] = hmdb_df.apply(lambda x: nl_finder(x['Molecule'], x[target_name]), axis=1)
 
 filename = "hmdb_df.pickle"
