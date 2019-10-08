@@ -4,7 +4,7 @@ from pandas import DataFrame as df
 import pickle
 from rdkit import Chem
 from rdkit.Chem import PandasTools
-from structures_to_search import target_structures
+from structures_to_search_n5 import target_structures #n5
 
 # Run command as: "python hmdb_structure_parser.py 2>&1 | tee log.txt" to get log and stdout
 # 3.5 minutes run time
@@ -58,5 +58,5 @@ current_df = open_pickle('hmdb_mols.pickle')
 current_df = substruct_target(current_df)
 current_df = pandas_structure(current_df)
 
-filename = "hmdb_df.pickle"
+filename = "hmdb_df_n5.pickle" # Out name editied
 pickle_out(current_df, filename)

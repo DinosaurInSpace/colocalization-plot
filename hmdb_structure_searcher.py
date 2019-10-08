@@ -9,7 +9,11 @@ from rdkit.Chem import Fragments
 Status:
 1. Executes 2 min. , runs without error...
 2. To do: delete columns ending in "_target"
-2. To do: Correlate mass spectra with functional groups...
+3. Need to use sanitized file re: line zero
+4. Add input file and output file names at CL
+4. Add search objects to DF here first instead of hmdb structure parser
+5. Add search for none type objects in "structures to search"
+5. To do: Correlate mass spectra with functional groups...
 """
 
 
@@ -39,18 +43,18 @@ def struct_pandas_search(x_df, headers):
     return x_df
 
 
-current_df = df(pickle.load(open('hmdb_san.pickle', 'rb')))
+current_df = df(pickle.load(open('hmdb_df_n5.pickle', 'rb'))) # Name changed
 current_headers = header_targets(current_df)
 final_df = struct_pandas_search(current_df, current_headers)
 
 # Can only find specific hardcoded structures in RDkit
-final_df['CA_alaph_alt'] = final_df.apply(lambda x: bool(Chem.Fragments.fr_Al_COO(x['Molecule'])), axis=1)
-final_df['OH_alaph_alt'] = final_df.apply(lambda x: bool(Chem.Fragments.fr_Al_OH(x['Molecule'])), axis=1)
+# final_df['CA_alaph_alt'] = final_df.apply(lambda x: bool(Chem.Fragments.fr_Al_COO(x['Molecule'])), axis=1)
+# final_df['OH_alaph_alt'] = final_df.apply(lambda x: bool(Chem.Fragments.fr_Al_OH(x['Molecule'])), axis=1)
 
 # OCD:
 final_df = final_df.reindex(sorted(final_df.columns), axis=1)
 
-outname = "hmdb_san_searched.pickle"
+outname = "hmdb_df_n5_searched.pickle" # Name changed
 outfile = open(outname, "wb")
 pickle.dump(final_df, outfile)
 outfile.close()
